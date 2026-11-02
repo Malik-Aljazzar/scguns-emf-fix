@@ -1,0 +1,165 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.141'
+    id 'idea'
+    id 'me.modmuss50.mod-publish-plugin' version '2.2.1'
+}
+
+tasks.named('wrapper', Wrapper).configure {
+    distributionType = Wrapper.DistributionType.BIN
+}
+
+version = mod_version
+group = mod_group_id
+
+repositories {
+    // EMF + ETF: Modrinth's maven by version id (see gradle.properties).
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "Modrinth"
+                url = "https://api.modrinth.com/maven"
+            }
+        }
+        filter {
+            includeGroup "maven.modrinth"
+        }
+    }
+    // ScorchedGuns Neoforged is only on CurseForge - CurseMaven serves any CurseForge file by project + file id.
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "CurseMaven"
+                url = "https://www.cursemaven.com"
+            }
+        }
+        filter {
+            includeGroup "curse.maven"
+        }
+    }
+}
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        client {
+            client()
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+dependencies {
+    // ScorchedGuns: compile-time only, to target the real OptionalClientCompat class our mixin
+    // patches. Resolved from CurseMaven (the exact jar that is deployed, by CurseForge file id) -
+    // we never ship/bundle it ourselves; the mixin's own "required" dependency entry in
+    // mods.toml already hard-requires scguns to be installed.
+    compileOnly("curse.maven:scorched-guns-neoforged-1538807:${scguns_curseforge_file_id}") { transitive = false }
+
+    // EMF 3.x (+ ETF, whose state types EMF's API extends): compile-time only, for the EMF 3
+    // animation-context bridge adapter. Same never-bundled reasoning as ScorchedGuns above. EMF stays
+    // optional at runtime - the adapter class is only loaded after EMF 3 classes were detected.
+    compileOnly("maven.modrinth:entity-model-features:${emf_modrinth_version}") { transitive = false }
+    compileOnly("maven.modrinth:entitytexturefeatures:${etf_modrinth_version}") { transitive = false }
+
+    annotationProcessor 'org.spongepowered:mixin:0.8.7:processor'
+}
+
+var generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            scguns_version         : scguns_version,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from "src/main/templates"
+    into "build/generated/sources/modMetadata"
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+// Release notes of this version: its own section of CHANGELOG.md, from "## [<mod_version>]" up to the next
+// "## [" heading. A release without one fails instead of going out with empty or wrong notes.
+def changelogSection = providers.provider {
+    def lines = file('CHANGELOG.md').readLines('UTF-8')
+    int start = lines.findIndexOf { it.trim() == "## [${mod_version}]" }
+    if (start < 0) {
+        throw new GradleException("CHANGELOG.md has no '## [${mod_version}]' section - add one before releasing")
+    }
+    int end = lines.findIndexOf(start + 1) { it.startsWith('## [') }
+    def body = lines.subList(start + 1, end < 0 ? lines.size() : end).join('\n').trim()
+    if (body.isEmpty()) {
+        throw new GradleException("The '## [${mod_version}]' section of CHANGELOG.md is empty")
+    }
+    "## [${mod_version}]\n\n${body}"
+}
+
+// Upload to CurseForge + GitHub release, run by .github/workflows/release.yml on a version tag. Without
+// CURSEFORGE_API_KEY (e.g. on a dev machine) it's always a dry run: the upload is only written to build/publishMods.
+publishMods {
+    file = jar.archiveFile
+    changelog = changelogSection
+    version = mod_version
+    type = STABLE
+    displayName = "${mod_id}-${mod_version}"
+    modLoaders.add('neoforge')
+    dryRun = providers.environmentVariable('CURSEFORGE_API_KEY').getOrNull() == null
+
+    curseforge {
+        projectId = providers.gradleProperty('curseforge_project_id').map { it.trim() }
+        accessToken = providers.environmentVariable('CURSEFORGE_API_KEY')
+        minecraftVersions.add(minecraft_version)
+        // Client-side mod: the mixins patch ScorchedGuns' client render compat only.
+        clientRequired = true
+        serverRequired = false
+        requires('scorched-guns-neoforged')
+        optional('entity-model-features')
+    }
+    github {
+        accessToken = providers.environmentVariable('GITHUB_TOKEN')
+        repository = project.github_repository
+        commitish = providers.environmentVariable('GITHUB_SHA').orElse('main')
+        tagName = "v${mod_version}"
+    }
+}
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}

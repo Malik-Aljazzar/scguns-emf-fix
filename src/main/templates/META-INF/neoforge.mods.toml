@@ -1,0 +1,60 @@
+# NeoForge mod metadata for ScorchedGuns EMF Compat Perf Fix
+
+modLoader="javafml" #mandatory
+loaderVersion="${loader_version_range}" #mandatory
+license="${mod_license}"
+
+[[mods]] #mandatory
+modId="${mod_id}" #mandatory
+version="${mod_version}" #mandatory
+displayName="${mod_name}" #mandatory
+
+description='''
+Client-side-only perf fix for ScorchedGuns' Entity Model Features (EMF) compat layer.
+
+Root cause (verified against ScorchedGuns 1.5's real bytecode via javap, see
+specification/SPEC.md): top.ribs.scguns.client.compat.OptionalClientCompat has THREE
+methods - isEntityModelFeaturesFirstPersonHand(), getEntityModelFeaturesContextEntity(),
+and isScorchedGunHeldByEntityModelFeaturesContext() - that each do a fresh, uncached
+Class.forName(...) plus a reflective Field/Method lookup on EVERY call, instead of
+caching like the same class's own isEntityModelFeaturesLoaded() already does for a
+similar check. The first of these three runs on EMF's generic per-model-part animate
+hook, which fires for every body part of every EMF-animated entity, every frame - not
+just the player's own first-person hand. Confirmed via spark profiler (Render thread)
+correlating severe FPS drops (60 -> 10) with villager-crowd density.
+
+This mod caches the resolved Class/Field/Method objects after their first successful
+(or failed) lookup, so the expensive reflection work happens at most once per game
+session instead of every frame per entity part.
+
+Since 1.1.0 it also makes ScorchedGuns' EMF compat work on EMF 3.x at all: ScorchedGuns
+1.5 detects EMF via EMF 2.x's EMFAnimationEntityContext class, which EMF 3.x removed, so
+its whole EMF compat (clean first-person gun arms, third-person gun pose over Fresh
+Animations, the is_scguns_gun_held variable) silently switched off. On EMF 3.x this mod
+answers those context reads from EMF 3's render-state API instead. EMF 2.x and setups
+without EMF are left exactly as they were.
+'''
+
+[[mixins]]
+config="${mod_id}.mixins.json"
+
+[[dependencies.${mod_id}]]
+    modId="neoforge"
+    type="required"
+    versionRange="[${neo_version},)"
+    ordering="NONE"
+    side="CLIENT"
+
+[[dependencies.${mod_id}]]
+    modId="scguns"
+    type="required"
+    versionRange="[${scguns_version},)"
+    ordering="AFTER"
+    side="CLIENT"
+
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    type="required"
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="CLIENT"
